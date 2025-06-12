@@ -1,29 +1,17 @@
 
-const { default: makeWASocket, DisconnectReason } = require('@whiskeysockets/baileys')
-const { Boom } = require('@hapi/boom')
+const { default: makeWASocket, DisconnectReason, useMultiFileAuthState } = require('@whiskeysockets/baileys')
+const dotenv = require('dotenv')
 const qrcode = require('qrcode')
-const P = require('pino')
-const fs = require('fs')
 const axios = require('axios')
-const admin = require('firebase-admin')
+const P = require('pino')
 
-// 🔥 Firebase Setup
-const serviceAccount = require('./firebase-credentials.json')
-admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount)
-})
-const db = admin.firestore()
-const authDoc = db.collection('sessions').doc('marcus')
+dotenv.config()
 
-// Util salva/restaura
-async function salvarCredenciais(data) {
-  await authDoc.set({ data })
-}
-
-async function carregarCredenciais() {
-  const doc = await authDoc.get()
-  return doc.exists ? doc.data().data : null
-}
+const historicoMensagens = {}
+const historicoGPT = {}
+const respostasEnviadas = {}
+const timestampHistorico = {}
+const usuariosSilenciados = {}
 
 async function gerarRespostaOpenAI(historico, sender) {
   try {
@@ -34,18 +22,10 @@ async function gerarRespostaOpenAI(historico, sender) {
         messages: [
           {
             role: 'system',
-            content: `Você é Marcus, secretário do Eduardo Milhomem. Fale como se estivesse no WhatsApp.
-Seja direto e objetivo, mas com firmeza educada. Evite ser rude ou sarcástico.
-Não use saudações comuns como "Olá", "Oi", "Como posso ajudar?", mas mantenha o respeito no tom.
-A primeira frase da conversa deve conter no máximo 3 palavras. Nunca ofereça ajuda não solicitada.
-Fale com clareza e respeito. Evite repetir frases em mensagens diferentes. Converse com qualquer pessoa.
-Se perguntarem por PIX, diga que é 11168883601. Se perguntarem por Eduardo, diga "Ele estava aqui quase agora, peraí".
-Nunca se despeça. Se o usuário pedir algum conteúdo, você pode supor o que ele quer.
-Caso não entenda, diga o que acha que pode ser. No pior caso, diga que o Eduardo vai entender.`
+            content: 'Você é Marcus, secretário do Eduardo Milhomem. Seja direto, educado e objetivo. Fale com clareza e respeito. Evite repetir frases em mensagens diferentes. Nunca ofereça ajuda não solicitada. Converse com qualquer pessoa. A primeira frase da conversa deve conter no máximo 3 palavras. Se perguntarem por PIX, diga que é 11168883601. Se perguntarem por Eduardo, diga "Ele estava aqui quase agora, peraí".'
           },
           ...historico
-        ],
-        temperature: 0.8
+        ]
       },
       {
         headers: {
@@ -56,13 +36,7 @@ Caso não entenda, diga o que acha que pode ser. No pior caso, diga que o Eduard
     )
 
     const conteudo = resposta.data.choices[0].message.content.trim()
-    if (!conteudo) {
-      console.log("⚠️ Resposta vazia da OpenAI")
-      return null
-    }
-
-    console.log("🔁 Resposta gerada:", conteudo)
-
+    if (!conteudo) return null
     const partes = conteudo.match(/.{1,300}(?:\s|$)/g) || [conteudo]
     return partes.map((p, i) => i === 0 ? `*Marcus:* ${p}` : p)
   } catch (err) {
@@ -72,22 +46,17 @@ Caso não entenda, diga o que acha que pode ser. No pior caso, diga que o Eduard
 }
 
 async function iniciarBot() {
-  const creds = await carregarCredenciais()
-
-  const { state, saveState } = await require('@whiskeysockets/baileys').initAuthCreds(creds)
+  const { state, saveCreds } = await useMultiFileAuthState('auth')
   const sock = makeWASocket({
     logger: P({ level: 'silent' }),
     auth: state,
     printQRInTerminal: false
   })
 
-  sock.ev.on('creds.update', async () => {
-    await salvarCredenciais(state)
-  })
+  sock.ev.on('creds.update', saveCreds)
 
   sock.ev.on('connection.update', async (update) => {
     const { connection, lastDisconnect, qr } = update
-
     if (qr) {
       const qrImg = await qrcode.toDataURL(qr)
       console.log('📲 Escaneie o QR no navegador:')
@@ -95,7 +64,7 @@ async function iniciarBot() {
     }
 
     if (connection === 'close') {
-      const motivo = new Boom(lastDisconnect?.error)?.output?.statusCode
+      const motivo = lastDisconnect?.error?.output?.statusCode
       if (motivo !== DisconnectReason.loggedOut) {
         iniciarBot()
       } else {
@@ -108,15 +77,12 @@ async function iniciarBot() {
     }
   })
 
-  const historicoMensagens = {}
-
   sock.ev.on('messages.upsert', async ({ messages }) => {
     const msg = messages[0]
     if (!msg.message || msg.key.fromMe) return
 
-    const texto = msg.message.conversation || msg.message.extendedTextMessage?.text || ''
     const sender = msg.key.remoteJid
-
+    const texto = msg.message.conversation || msg.message.extendedTextMessage?.text || ''
     if (!texto || texto.trim().length === 0) return
 
     historicoMensagens[sender] = historicoMensagens[sender] || []
