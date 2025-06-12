@@ -1,7 +1,7 @@
 
 const { default: makeWASocket, DisconnectReason, useMultiFileAuthState } = require('@whiskeysockets/baileys')
 const dotenv = require('dotenv')
-const qrcode = require('qrcode-terminal')
+const qrcode = require('qrcode')
 const axios = require('axios')
 const P = require('pino')
 
@@ -23,7 +23,7 @@ async function gerarRespostaOpenAI(historico, sender) {
         messages: [
           {
             role: 'system',
-            content: 'Você é Marcus, secretário do Eduardo Milhomem. Fale como se estivesse no WhatsApp. Seja direto e objetivo, mas com firmeza educada. Evite ser rude ou sarcástico. Não use saudações comuns como "Olá", "Oi", "Como posso ajudar?", mas mantenha o respeito no tom. A primeira frase da conversa deve conter no máximo 3 palavras. Nunca ofereça ajuda não solicitada. Fale com clareza e respeito. Evite repetir frases em mensagens diferentes. Converse com qualquer pessoa. Se perguntarem por PIX, diga que é 11168883601. Se perguntarem por Eduardo, diga "Ele estava aqui quase agora, peraí". Nunca se despeça. Se o usuário pedir algum conteúdo, você pode supor o que ele quer. Caso não entenda, diga o que acha que pode ser. No pior caso, diga que o Eduardo vai entender.'
+            content: 'Você é Marcus, secretário do Eduardo Milhomem. Fale como se estivesse no WhatsApp. Seja direto e objetivo, mas com firmeza educada. Evite ser rude ou sarcástico. Não use saudações comuns como "Olá", "Oi", "Como posso ajudar?", mas mantenha o respeito no tom. A primeira frase da conversa deve conter no máximo 3 palavras. Nunca ofereça ajuda não solicitada. Fale com clareza e respeito. Evite repetir frases em mensagens diferentes. Converse com qualquer pessoa. Se perguntarem por PIX, ...
           },
           ...historico
         ],
@@ -52,11 +52,33 @@ async function iniciarBot() {
   const { state, saveCreds } = await useMultiFileAuthState('auth')
   const sock = makeWASocket({
     logger: P({ level: 'silent' }),
-    printQRInTerminal: true,
-    auth: state
+    auth: state,
+    printQRInTerminal: false
   })
 
   sock.ev.on('creds.update', saveCreds)
+
+  sock.ev.on('connection.update', async (update) => {
+    const { connection, lastDisconnect, qr } = update
+    if (qr) {
+      const qrImg = await qrcode.toDataURL(qr)
+      console.log('📲 Escaneie o QR no navegador:')
+      console.log(qrImg)
+    }
+
+    if (connection === 'close') {
+      const motivo = lastDisconnect?.error?.output?.statusCode
+      if (motivo !== DisconnectReason.loggedOut) {
+        iniciarBot()
+      } else {
+        console.log('❌ Sessão encerrada')
+      }
+    }
+
+    if (connection === 'open') {
+      console.log('✅ Marcus conectado com sucesso')
+    }
+  })
 
   sock.ev.on('messages.upsert', async ({ messages }) => {
     const msg = messages[0]
@@ -76,21 +98,6 @@ async function iniciarBot() {
       for (const parte of resposta) {
         await sock.sendMessage(sender, { text: parte })
       }
-    }
-  })
-
-  sock.ev.on('connection.update', (update) => {
-    const { connection, lastDisconnect } = update
-    if (connection === 'close') {
-      const motivo = lastDisconnect?.error?.output?.statusCode
-      if (motivo !== DisconnectReason.loggedOut) {
-        iniciarBot()
-      } else {
-        console.log('❌ Sessão encerrada')
-      }
-    }
-    if (connection === 'open') {
-      console.log('✅ Marcus conectado com sucesso')
     }
   })
 }
