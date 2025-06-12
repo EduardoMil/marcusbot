@@ -8,10 +8,6 @@ const P = require('pino')
 dotenv.config()
 
 const historicoMensagens = {}
-const historicoGPT = {}
-const respostasEnviadas = {}
-const timestampHistorico = {}
-const usuariosSilenciados = {}
 
 async function gerarRespostaOpenAI(historico, sender) {
   try {
@@ -59,8 +55,8 @@ async function iniciarBot() {
     const { connection, lastDisconnect, qr } = update
     if (qr) {
       const qrImg = await qrcode.toDataURL(qr)
-      console.log('📲 Escaneie o QR no navegador:')
-      console.log(qrImg)
+      console.log('📲 ESCANEIA O QR CLICANDO NESSE LINK:')
+      console.log(qrImg) // exibe a string base64
     }
 
     if (connection === 'close') {
