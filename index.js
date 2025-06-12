@@ -1,16 +1,29 @@
-// index.js atualizado com filtro de mensagens baseado na atividade do Eduardo e gatilhos
 
-const { default: makeWASocket, DisconnectReason, useMultiFileAuthState } = require('@whiskeysockets/baileys')
-const dotenv = require('dotenv')
+const { default: makeWASocket, DisconnectReason } = require('@whiskeysockets/baileys')
+const { Boom } = require('@hapi/boom')
 const qrcode = require('qrcode')
-const axios = require('axios')
 const P = require('pino')
+const fs = require('fs')
+const axios = require('axios')
+const admin = require('firebase-admin')
 
-dotenv.config()
+// 🔥 Firebase Setup
+const serviceAccount = require('./firebase-credentials.json')
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount)
+})
+const db = admin.firestore()
+const authDoc = db.collection('sessions').doc('marcus')
 
-const historicoMensagens = {}
-const respostasEnviadas = {}
-const ultimaMensagemDoEduardo = {}
+// Util salva/restaura
+async function salvarCredenciais(data) {
+  await authDoc.set({ data })
+}
+
+async function carregarCredenciais() {
+  const doc = await authDoc.get()
+  return doc.exists ? doc.data().data : null
+}
 
 async function gerarRespostaOpenAI(historico, sender) {
   try {
@@ -21,10 +34,14 @@ async function gerarRespostaOpenAI(historico, sender) {
         messages: [
           {
             role: 'system',
-            content: `Fale como Marcus, um assistente direto no WhatsApp. Respostas curtas, informais e práticas.
-Nunca se apresente duas vezes. Se pedirem algo com imagem, tente adivinhar o que querem.
-Se não tiver certeza, chute com confiança. Use frases curtas e sem enrolação.
-Nunca use 'oi' ou 'olá'. A primeira frase deve ter no máximo 3 palavras. Se perguntarem por PIX, diga que é 11168883601. Se perguntarem por Eduardo, diga "Ele tava aqui quase agora, peraí".`
+            content: `Você é Marcus, secretário do Eduardo Milhomem. Fale como se estivesse no WhatsApp.
+Seja direto e objetivo, mas com firmeza educada. Evite ser rude ou sarcástico.
+Não use saudações comuns como "Olá", "Oi", "Como posso ajudar?", mas mantenha o respeito no tom.
+A primeira frase da conversa deve conter no máximo 3 palavras. Nunca ofereça ajuda não solicitada.
+Fale com clareza e respeito. Evite repetir frases em mensagens diferentes. Converse com qualquer pessoa.
+Se perguntarem por PIX, diga que é 11168883601. Se perguntarem por Eduardo, diga "Ele estava aqui quase agora, peraí".
+Nunca se despeça. Se o usuário pedir algum conteúdo, você pode supor o que ele quer.
+Caso não entenda, diga o que acha que pode ser. No pior caso, diga que o Eduardo vai entender.`
           },
           ...historico
         ],
@@ -39,9 +56,12 @@ Nunca use 'oi' ou 'olá'. A primeira frase deve ter no máximo 3 palavras. Se pe
     )
 
     const conteudo = resposta.data.choices[0].message.content.trim()
-    if (!conteudo) return null
-    if (respostasEnviadas[sender] === conteudo) return null
-    respostasEnviadas[sender] = conteudo
+    if (!conteudo) {
+      console.log("⚠️ Resposta vazia da OpenAI")
+      return null
+    }
+
+    console.log("🔁 Resposta gerada:", conteudo)
 
     const partes = conteudo.match(/.{1,300}(?:\s|$)/g) || [conteudo]
     return partes.map((p, i) => i === 0 ? `*Marcus:* ${p}` : p)
@@ -52,17 +72,22 @@ Nunca use 'oi' ou 'olá'. A primeira frase deve ter no máximo 3 palavras. Se pe
 }
 
 async function iniciarBot() {
-  const { state, saveCreds } = await useMultiFileAuthState('auth')
+  const creds = await carregarCredenciais()
+
+  const { state, saveState } = await require('@whiskeysockets/baileys').initAuthCreds(creds)
   const sock = makeWASocket({
     logger: P({ level: 'silent' }),
     auth: state,
     printQRInTerminal: false
   })
 
-  sock.ev.on('creds.update', saveCreds)
+  sock.ev.on('creds.update', async () => {
+    await salvarCredenciais(state)
+  })
 
   sock.ev.on('connection.update', async (update) => {
     const { connection, lastDisconnect, qr } = update
+
     if (qr) {
       const qrImg = await qrcode.toDataURL(qr)
       console.log('📲 Escaneie o QR no navegador:')
@@ -70,7 +95,7 @@ async function iniciarBot() {
     }
 
     if (connection === 'close') {
-      const motivo = lastDisconnect?.error?.output?.statusCode
+      const motivo = new Boom(lastDisconnect?.error)?.output?.statusCode
       if (motivo !== DisconnectReason.loggedOut) {
         iniciarBot()
       } else {
@@ -83,32 +108,16 @@ async function iniciarBot() {
     }
   })
 
+  const historicoMensagens = {}
+
   sock.ev.on('messages.upsert', async ({ messages }) => {
     const msg = messages[0]
     if (!msg.message || msg.key.fromMe) return
 
+    const texto = msg.message.conversation || msg.message.extendedTextMessage?.text || ''
     const sender = msg.key.remoteJid
-    const nome = msg.pushName?.toLowerCase() || ''
-    const agora = Date.now()
 
-    // Se for o Eduardo, atualiza timestamp
-    if (nome.includes("eduardo")) {
-      ultimaMensagemDoEduardo[sender] = agora
-      return
-    }
-
-    // Verifica se teve mensagem do Eduardo nos últimos 5 minutos
-    const cincoMin = 5 * 60 * 1000
-    const tempoDesdeUltimaMensagem = agora - (ultimaMensagemDoEduardo[sender] || 0)
-    if (tempoDesdeUltimaMensagem < cincoMin) return
-
-    // Coleta texto ou legenda
-    const texto = msg.message.conversation || msg.message.extendedTextMessage?.text || msg.message.imageMessage?.caption || ''
-    if (!texto) return
-
-    // Verifica se há intenção clara (gatilhos)
-    const gatilhos = /(troca|faz|envia|cria|edita|mostra|responde|ajuda|arte|design|pix|conteúdo|post)/i
-    if (!gatilhos.test(texto)) return
+    if (!texto || texto.trim().length === 0) return
 
     historicoMensagens[sender] = historicoMensagens[sender] || []
     historicoMensagens[sender].push({ role: 'user', content: texto })
