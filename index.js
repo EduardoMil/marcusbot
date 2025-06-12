@@ -1,3 +1,11 @@
+const { execSync } = require('child_process');
+
+try {
+  execSync('npm install qrcode', { stdio: 'inherit' });
+  console.log('✅ qrcode instalado com sucesso');
+} catch (err) {
+  console.error('❌ Erro ao instalar qrcode:', err);
+}
 
 const { default: makeWASocket, DisconnectReason, useMultiFileAuthState } = require('@whiskeysockets/baileys')
 const dotenv = require('dotenv')
