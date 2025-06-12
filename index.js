@@ -3,6 +3,7 @@ const { default: makeWASocket, DisconnectReason, useMultiFileAuthState } = requi
 const dotenv = require('dotenv')
 const qrcode = require('qrcode-terminal')
 const axios = require('axios')
+const P = require('pino')
 
 dotenv.config()
 
@@ -37,22 +38,61 @@ async function gerarRespostaOpenAI(historico, sender) {
     )
 
     const conteudo = resposta.data.choices[0].message.content.trim()
-    if (!conteudo) {
-      console.log("⚠️ OpenAI respondeu vazio")
-      return null
-    }
+    if (!conteudo) return null
 
     const partes = conteudo.match(/.{1,300}(?:\s|$)/g) || [conteudo]
-    const mensagens = partes.map((p, i) => i === 0 ? `*Marcus:* ${p}` : p)
-
-    respostasEnviadas[sender] = respostasEnviadas[sender] || new Set()
-    const novaMensagem = mensagens.join('\n')
-
-    respostasEnviadas[sender].add(novaMensagem)
-
-    return novaMensagem
+    return partes.map((p, i) => i === 0 ? `*Marcus:* ${p}` : p)
   } catch (err) {
-    console.error("Erro ao chamar OpenAI:", err?.response?.data || err)
+    console.error("❌ Erro OpenAI:", err?.response?.data || err)
     return null
   }
 }
+
+async function iniciarBot() {
+  const { state, saveCreds } = await useMultiFileAuthState('auth')
+  const sock = makeWASocket({
+    logger: P({ level: 'silent' }),
+    printQRInTerminal: true,
+    auth: state
+  })
+
+  sock.ev.on('creds.update', saveCreds)
+
+  sock.ev.on('messages.upsert', async ({ messages }) => {
+    const msg = messages[0]
+    if (!msg.message || msg.key.fromMe) return
+
+    const texto = msg.message.conversation || msg.message.extendedTextMessage?.text || ''
+    const sender = msg.key.remoteJid
+
+    if (!texto) return
+
+    historicoMensagens[sender] = historicoMensagens[sender] || []
+    historicoMensagens[sender].push({ role: 'user', content: texto })
+    if (historicoMensagens[sender].length > 6) historicoMensagens[sender].shift()
+
+    const resposta = await gerarRespostaOpenAI(historicoMensagens[sender], sender)
+    if (resposta) {
+      for (const parte of resposta) {
+        await sock.sendMessage(sender, { text: parte })
+      }
+    }
+  })
+
+  sock.ev.on('connection.update', (update) => {
+    const { connection, lastDisconnect } = update
+    if (connection === 'close') {
+      const motivo = lastDisconnect?.error?.output?.statusCode
+      if (motivo !== DisconnectReason.loggedOut) {
+        iniciarBot()
+      } else {
+        console.log('❌ Sessão encerrada')
+      }
+    }
+    if (connection === 'open') {
+      console.log('✅ Marcus conectado com sucesso')
+    }
+  })
+}
+
+iniciarBot()
