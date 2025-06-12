@@ -1,0 +1,15 @@
+{
+  "name": "marcus-bot",
+  "version": "1.0.0",
+  "description": "Bot Marcus para atendimento via WhatsApp com GPT",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "axios": "^1.6.7",
+    "dotenv": "^16.3.1",
+    "qrcode-terminal": "^0.12.0",
+    "@whiskeysockets/baileys": "^6.7.1"
+  }
+}

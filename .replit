@@ -1,0 +1,11 @@
+run = "npm start"
+
+entrypoint = "index.js"
+
+[nix]
+channel = "stable-24_11"
+
+[deployment]
+run = ["node", "index.js"]
+deploymentTarget = "autoscale"
+ignorePorts = false
